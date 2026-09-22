@@ -679,6 +679,51 @@ def test_forward_arima_models():
 # model_x.summary()
 
 
+def test_arima_xreg_matches_R():
+    """stats::arima(AirPassengers, c(1, 0, 0), xreg = cbind(sqrt(t), log(t)), method = "CSS-ML")
+
+    The two regressors are strongly correlated (r = 0.96), so the fit goes through
+    the SVD rotation of the design and the coefficients are rotated back.
+    """
+    t = np.arange(1, ap.size + 1)
+    xreg = np.column_stack([np.sqrt(t), np.log(t)])
+    fit = arima(ap, order=(1, 0, 0), xreg=xreg, method="CSS-ML")
+    expected = {
+        "ar1": 0.748687418,
+        "intercept": 69.413157434,
+        "ex_1": 60.405547697,
+        "ex_2": -69.001480659,
+    }
+    assert list(fit["coef"]) == list(expected)
+    np.testing.assert_allclose(
+        list(fit["coef"].values()), list(expected.values()), rtol=1e-3
+    )
+    np.testing.assert_allclose(fit["loglik"], -701.6001646, rtol=1e-6)
+    np.testing.assert_allclose(fit["aic"], 1413.200329, rtol=1e-6)
+
+
+def test_arima_rotates_xreg_onto_singular_directions(monkeypatch):
+    """The initial regression is fit on xreg %*% S$v as in R's arima, so its
+    columns are orthogonal and their norms are the singular values of xreg."""
+    t = np.arange(1, ap.size + 1)
+    xreg = np.column_stack([np.sqrt(t), np.log(t)])
+    designs = []
+    real_ols = arima_module.sm.OLS
+
+    def spy_ols(endog, exog, *args, **kwargs):
+        designs.append(np.array(exog))
+        return real_ols(endog, exog, *args, **kwargs)
+
+    monkeypatch.setattr(arima_module.sm, "OLS", spy_ols)
+    arima(ap, order=(1, 0, 0), xreg=xreg, include_mean=False, method="CSS-ML")
+    assert len(designs) == 1
+    rotated = designs[0]
+    singular_values = np.linalg.svd(xreg, compute_uv=False)
+    np.testing.assert_allclose(
+        rotated.T @ rotated, np.diag(singular_values**2), atol=1e-6
+    )
+
+
 def test_AutoARIMA_edge_cases(almost_constant_x):
     """Test AutoARIMA with various edge cases and data types."""
     # Test with constant array
@@ -912,7 +957,7 @@ def test_issue_649(capsys):
     y = np.array(42 * [100] + [119, 525])
     AutoARIMA(season_length=12, trace=True).fit(y)
     captured = capsys.readouterr()
-    expected_output = """ARIMA(2,0,2)(1,0,1)[12] with non-zero mean : 505.8834
+    expected_output = """ARIMA(2,0,2)(1,0,1)[12] with non-zero mean : inf
 ARIMA(0,0,0)            with non-zero mean : 494.2237
 ARIMA(1,0,0)(1,0,0)[12] with non-zero mean : 496.9135
 ARIMA(0,0,1)(0,0,1)[12] with non-zero mean : 496.7905
